@@ -32,7 +32,11 @@ app.use('/users', usersRouter);
 
 
 // Allow cross origin
-app.use(cors());
+app.use(cors({
+  origin: 'https://hollarkiddies-frontend.onrender.com', // Allow your frontend URL
+  methods: ['GET', 'POST', 'PUT', 'DELETE'], // Specify allowed methods if needed
+  credentials: true // If you need to send cookies or auth headers
+}));
 
 // catch 404 and forward to error handler
 app.use(function(req, res, next) {
