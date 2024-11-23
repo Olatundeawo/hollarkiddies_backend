@@ -1,25 +1,26 @@
 const Products = require('../models/products');
 const asyncHandler = require("express-async-handler");
 const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
-const fsPromises = require('fs').promises;
+const cloudinary = require('../firebase');
 
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-      const uploadPath = path.join(__dirname, 'images');
-      if (!fs.existsSync(uploadPath)) {
-        fs.mkdirSync(uploadPath, { recursive: true });  // Ensure the directory exists
-      }
-      cb(null, uploadPath);
-    },
-    filename: (req, file, cb) => {
-      const sanitizedFilename = file.originalname.replace(/[^a-zA-Z0-9.]/g, '_');  // Sanitize filenames
-      cb(null, Date.now() + '-' + sanitizedFilename);  // Use sanitized filename
-    }
-  });
+// const storage = multer.diskStorage({
+//     destination: (req, file, cb) => {
+//       const uploadPath = path.join(__dirname, 'images');
+//       if (!fs.existsSync(uploadPath)) {
+//         fs.mkdirSync(uploadPath, { recursive: true });  // Ensure the directory exists
+//       }
+//       cb(null, uploadPath);
+//     },
+//     filename: (req, file, cb) => {
+//       const sanitizedFilename = file.originalname.replace(/[^a-zA-Z0-9.]/g, '_');  // Sanitize filenames
+//       cb(null, Date.now() + '-' + sanitizedFilename);  // Use sanitized filename
+//     }
+//   });
   
-  const upload = multer({ storage: storage });
+//   const upload = multer({ storage: storage });
+  const upload = multer ({
+    storage: multer.memoryStorage()
+  });
 
 const queryAsync = (sql, params) => {
     return new Promise((resolve, reject) => {
@@ -40,38 +41,71 @@ exports.index = asyncHandler(async(req, res, next) => {
 })
 
 // Display all products
-exports.product_list = asyncHandler( async (req, res, next) => {
-    let sql = `SELECT 
-                    p.id AS product_id,
-                    p.name,
-                    p.description,
-                    p.price,
-                    p.created_at,
-                    GROUP_CONCAT(pi.image_path) AS images
-                    FROM
-                        products p
-                    LEFT JOIN
-                            product_images pi ON p.id = pi.product_id
-                    GROUP BY
-                            p.id`;
+const cloudinaryUrl = (publicId) => {
+    return `https://res.cloudinary.com/${process.env.CLOUD_NAME}/image/upload/${publicId}`; // Replace `your-cloud-name` with your Cloudinary cloud name.
+};
+
+exports.product_list = asyncHandler(async (req, res, next) => {
+    let sql = `
+        SELECT 
+            p.id AS product_id,
+            p.name,
+            p.description,
+            p.price,
+            p.created_at,
+            pi.id AS image_id,
+            pi.image_path,
+            pi.public_id
+        FROM
+            products p
+        LEFT JOIN
+            product_images pi ON p.id = pi.product_id
+    `;
+
     try {
         const results = await new Promise((resolve, reject) => {
             Products.query(sql, (err, result) => {
-                if (err) return reject(err)
-                    else {
-                    const formattedResult = result.map(product => ({
-                    ...product,
-                    images: product.images ? product.images.split(',') : [] // convert comma sperated images into an array
-                     }));
-
-                    resolve(formattedResult);
-                }
-
+                if (err) return reject(err);
+                resolve(result);
             });
         });
-        res.json(results);
 
-        
+        // Group the results by product_id and create the list of images with secure URLs
+        const formattedResults = results.reduce((acc, product) => {
+            // Find the product in the accumulator array
+            let productIndex = acc.findIndex(p => p.product_id === product.product_id);
+
+            if (productIndex === -1) {
+                // If product doesn't exist in accumulator, create it
+                acc.push({
+                    product_id: product.product_id,
+                    name: product.name,
+                    description: product.description,
+                    price: product.price,
+                    created_at: product.created_at,
+                    images: [{
+                        image_id: product.image_id,
+                        image_path: product.image_path,
+                        public_id: product.public_id,
+                        secure_url: cloudinaryUrl(product.public_id) // Convert public_id to Cloudinary secure URL
+                    }]
+                });
+            } else {
+                // If product exists, add the image to the images array
+                acc[productIndex].images.push({
+                    image_id: product.image_id,
+                    image_path: product.image_path,
+                    public_id: product.public_id,
+                    secure_url: cloudinaryUrl(product.public_id) // Convert public_id to Cloudinary secure URL
+                });
+            }
+
+            return acc;
+        }, []);
+
+        // Return the formatted result with images
+        res.json(formattedResults);
+
     } catch (err) {
         // Error handling
         res.status(500).json({ error: err.message });
@@ -114,58 +148,90 @@ exports.product_detail = asyncHandler(async (req, res, next) => {
 // Product create on post
 exports.product_create_post = [
     upload.array('images', 10),
-
     asyncHandler(async (req, res, next) => {
         try {
             // Extract product details from request body
             const { name, description, price } = req.body;
-            const images = req.files.map(file => file.filename);
-
+        
             // Insert product details into the 'products' table
             const productSql = `INSERT INTO products (name, description, price, created_at) VALUES (?, ?, ?, NOW())`;
             const result = await queryAsync(productSql, [name, description, price]);
             const productId = result.insertId;
 
-            // Insert image paths into the 'product_images' table
-            const imageSql = `INSERT INTO product_images (product_id, image_path) VALUES ?`;
-            const imageValues = images.map(image => [productId, image]);
-            await queryAsync(imageSql, [imageValues]);
+            const uploadImages = (file) => {
+                return new Promise((resolve, reject) => {
+                    cloudinary.uploader.upload_stream(
+                        { folder: 'productImage' },
+                        (error, uploadResult) => {
+                            if (error) {
+                                reject(error);
+                            } else {
+                                resolve(uploadResult);
+                            }
+                        }
+                    ).end(file.buffer);
+                });
+            };
+
+            // Iterate over all uploaded files and await each image upload
+            const uploadResults = [];
+            for (const file of req.files) {
+                const uploadResult = await uploadImages(file);
+                uploadResults.push({
+                    secure_url: uploadResult.secure_url,
+                    public_id: uploadResult.public_id,
+                });
+            }
+
+            if (uploadResults.length > 0) {
+                // Insert image paths into the 'product_images' table
+                const imageSql = `INSERT INTO product_images (product_id, image_path, public_id) VALUES ?`;
+                const imageValues = uploadResults.map(image => [productId, image.secure_url, image.public_id]);
+                await queryAsync(imageSql, [imageValues]);
+            } else {
+                return res.status(400).json({ error: 'No images uploaded' });
+            }
 
             // Return success response
             res.status(201).json({
-                message: 'Product created successfully with images!'
+                message: 'Product created successfully with images!',
+                productId,
+                images: uploadResults,
             });
 
         } catch (err) {
             // Handle errors properly
             console.error('Error:', err);
             res.status(500).json({
-                error: 'An error occurred while creating the product'
+                error: 'An error occurred while creating the product',
+                details: err.message,  // Add more info for debugging
             });
         }
-
-})]; 
+    })
+];
 
 
 // Product delete on post
 
 exports.product_delete_post = asyncHandler(async (req, res, next) => {
-    const productDetail = req.params.id;
-    
+    const productId = req.params.id; // Renamed variable for consistency
+
     try {
-        const productDeatil = await new Promise((resolve, reject) => {
-            Products.query(`SELECT * FROM products WHERE id=?`, [productDetail], (err, result) => {
+        // 1. Fetch product details
+        const productDetail = await new Promise((resolve, reject) => {
+            Products.query(`SELECT * FROM products WHERE id=?`, [productId], (err, result) => {
                 if (err) return reject(err);
                 resolve(result);
             });
         });
 
-        if (!productDeatil) {
+        if (!productDetail || productDetail.length === 0) {
             return res.status(404).json("No product found");
         }
 
+        // 2. Fetch associated image paths from the database
         const imagesPath = await new Promise((resolve, reject) => {
-            Products.query(`SELECT image_path FROM product_images WHERE product_id = ?`, [productDetail], (err, result) => {
+            Products.query(`SELECT image_path, public_id FROM product_images WHERE product_id = ?`, [productId], (err, result) => {
                 if (err) return reject(err);
                 resolve(result);
             });
@@ -174,34 +240,34 @@ exports.product_delete_post = asyncHandler(async (req, res, next) => {
         if (!imagesPath || imagesPath.length === 0) {
             console.log("No images associated with this product.");
         } else {
-            // Delete images asynchronously
-            await Promise.all(imagesPath.map(async (image) => {
-                const imagePath = path.join(__dirname, 'images', image.image_path);
-                console.log(`Attempting to delete image at: ${imagePath}`);
+            // 3. Delete images from Cloudinary
+            const publicIds = imagesPath.map((image) => image.public_id);
+            if (publicIds.length > 0) {
                 try {
-                    await fsPromises.unlink(imagePath);
-                    console.log(`Deleted image: ${imagePath}`);
+                    await cloudinary.api.delete_resources(publicIds); // Bulk delete images from Cloudinary
+                    console.log(`Successfully deleted images with public_ids: ${publicIds}`);
                 } catch (err) {
-                    console.error(`Failed to delete image: ${imagePath}`, err);
+                    console.error("Error deleting images from Cloudinary:", err);
+                    return res.status(500).json("Error deleting images from Cloudinary");
                 }
-            }));
+            }
         }
 
-        // Deleting product and its images from the database
-        let sql = `DELETE products, product_images
-                   FROM products
-                   LEFT JOIN product_images ON products.id = product_images.product_id
-                   WHERE products.id = ?`;
-        
+        // 4. Delete product and its images from the database
+        let sql = `DELETE p, pi
+                   FROM products p
+                   LEFT JOIN product_images pi ON p.id = pi.product_id
+                   WHERE p.id = ?`;
+
         await new Promise((resolve, reject) => {
-            Products.query(sql, [productDetail], (err, result) => {
+            Products.query(sql, [productId], (err, result) => {
                 if (err) return reject(err);
                 resolve(result);
             });
         });
 
         res.status(200).json('Successfully deleted both product and images');
-    } catch(err) {
+    } catch (err) {
         next(err);
     }
 });
@@ -213,10 +279,10 @@ exports.product_image_delete_post = asyncHandler(async (req, res, next) => {
     const imageId = req.params.imageId;  // Image ID (or path) from request body (assuming you're sending it in the request body)
 
     try {
-        // 1. Fetch the image path from the `product_images` table based on product ID and image ID
+        // 1. Fetch the image details from the `product_images` table
         const imageDetail = await new Promise((resolve, reject) => {
             Products.query(
-                `SELECT image_path FROM product_images WHERE product_id = ? AND id = ?`,
+                `SELECT * FROM product_images WHERE product_id = ? AND id = ?`,
                 [productId, imageId],
                 (err, result) => {
                     if (err) return reject(err);
@@ -230,18 +296,16 @@ exports.product_image_delete_post = asyncHandler(async (req, res, next) => {
             return res.status(404).json("Image not found or not associated with this product");
         }
 
-        const imagePath = imageDetail[0].image_path;
+        // Get the Cloudinary public_id for deletion
+        const { public_id } = imageDetail[0];  // Assuming `public_id` is stored in your DB for each image
 
-        // 2. Delete the image from the filesystem
-        const fullPath = path.join(__dirname, 'images', imagePath);
-        console.log(`Attempting to delete image at: ${fullPath}`);
-
+        // 2. Delete the image from Cloudinary using the public_id
         try {
-            await fsPromises.unlink(fullPath);
-            console.log(`Deleted image: ${fullPath}`);
+            const result = await cloudinary.api.delete_resources([public_id]); // Cloudinary requires an array of public_ids
+            console.log(`Deleted image from Cloudinary: ${result}`);
         } catch (err) {
-            console.error(`Failed to delete image: ${fullPath}`, err);
-            return res.status(500).json('Failed to delete image from the filesystem');
+            console.error(`Failed to delete image from Cloudinary: ${err.message}`);
+            return res.status(500).json('Failed to delete image from Cloudinary');
         }
 
         // 3. Delete the image record from the `product_images` table
@@ -258,7 +322,8 @@ exports.product_image_delete_post = asyncHandler(async (req, res, next) => {
 
         res.status(200).json('Successfully deleted image from product');
     } catch (err) {
-        next(err);
+        console.error('Error during image deletion:', err);
+        next(err);  // Pass to error handling middleware
     }
 });
 

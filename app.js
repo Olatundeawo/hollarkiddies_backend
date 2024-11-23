@@ -17,7 +17,8 @@ app.set('view engine', 'jade');
 
 // Allow cross origin
 app.use(cors({
-  origin: 'https://hollartkiddies.onrender.com', // Allow your frontend URL
+  // origin: 'https://hollartkiddies.onrender.com', // Allow your frontend URL
+  origin: 'http://localhost:5173', // Allow your frontend URL
   methods: ['GET', 'POST', 'PUT', 'DELETE'], // Specify allowed methods if needed
   credentials: true // If you need to send cookies or auth headers
 }));
@@ -53,7 +54,7 @@ app.use(function(err, req, res, next) {
   res.status(err.status || 500);
   res.render('error');
 });
-const PORT =  6000;
+const PORT =  5000;
 app.listen(PORT, () => {
   console.log(`Now running on port ${PORT}`);
 });
