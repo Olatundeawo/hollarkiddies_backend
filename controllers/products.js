@@ -329,48 +329,109 @@ exports.product_image_delete_post = asyncHandler(async (req, res, next) => {
 
 
 // Product update on post
+// exports.product_update_post = [
+//     upload.array('images', 10),  // Allows up to 10 images to be uploaded
+//     asyncHandler(async (req, res, next) => {
+//         let productId = req.params.id;  // Extract the product ID from the URL params
+
+//         try {
+//             // Extract product details from the request body
+//             const { name, description, price } = req.body;
+//             const images = req.files ? req.files : [];  // `req.files` will contain the uploaded files (images)
+
+//             // 1. Update product details in the products table
+//             const productSql = `UPDATE products SET name=?, description=?, price=?, created_at=NOW() WHERE id= ?`;
+//             await queryAsync(productSql, [name, description, price, productId]);
+
+//             // 2. Upload images to Cloudinary and store their URLs in the database
+//             if (images.length > 0) {
+//                 // Loop through each image and upload it to Cloudinary
+//                 const uploadResults = [];  // To store the Cloudinary upload responses
+
+//                 for (const image of images) {
+//                     const cloudinaryResponse = await cloudinary.uploader.upload(image.path || image.buffer, {
+//                         folder: 'productImage',  // Optionally specify a folder in Cloudinary
+//                     });
+
+//                     // Store the secure URL and public ID for the uploaded image
+//                     uploadResults.push({
+//                         secure_url: cloudinaryResponse.secure_url,
+//                         public_id: cloudinaryResponse.public_id
+//                     });
+//                 }
+
+//                 // 3. Insert image details into the product_images table
+//                 for (const image of uploadResults) {
+//                     const imageSql = `INSERT INTO product_images (product_id, image_path, public_id)
+//                                       VALUES (?, ?, ?)`;  // Only insert new image
+//                     await queryAsync(imageSql, [productId, image.secure_url, image.public_id]);
+//                 }
+//             }
+
+//             // Return success response
+//             res.status(200).json({
+//                 message: 'Product successfully updated with new images',
+//             });
+
+//         } catch (err) {
+//             console.error('Error updating product:', err);
+//             res.status(500).json({
+//                 error: 'An error occurred while updating the product',
+//                 details: err.message,
+//             });
+//         }
+//     })
+// ];
 exports.product_update_post = [
-    upload.array('images', 10),  // Allows up to 10 images to be uploaded
+    upload.array('images', 10), // Allows up to 10 images
     asyncHandler(async (req, res, next) => {
-        let productId = req.params.id;  // Extract the product ID from the URL params
+        const productId = req.params.id;
 
         try {
-            // Extract product details from the request body
             const { name, description, price } = req.body;
-            const images = req.files ? req.files : [];  // `req.files` will contain the uploaded files (images)
+            const images = req.files || [];
 
-            // 1. Update product details in the products table
-            const productSql = `UPDATE products SET name=?, description=?, price=?, created_at=NOW() WHERE id= ?`;
+            // 1. Update product details
+            const productSql = `
+                UPDATE products 
+                SET name = ?, description = ?, price = ?, created_at = NOW() 
+                WHERE id = ?`;
             await queryAsync(productSql, [name, description, price, productId]);
 
-            // 2. Upload images to Cloudinary and store their URLs in the database
+            // Cloudinary upload function (same as in product_create_post)
+            const uploadImages = (file) => {
+                return new Promise((resolve, reject) => {
+                    cloudinary.uploader.upload_stream(
+                        { folder: 'productImage' },
+                        (error, uploadResult) => {
+                            if (error) reject(error);
+                            else resolve(uploadResult);
+                        }
+                    ).end(file.buffer);
+                });
+            };
+
+            // 2. If images were uploaded, handle them
             if (images.length > 0) {
-                // Loop through each image and upload it to Cloudinary
-                const uploadResults = [];  // To store the Cloudinary upload responses
-
-                for (const image of images) {
-                    const cloudinaryResponse = await cloudinary.uploader.upload(image.path || image.buffer, {
-                        folder: 'productImage',  // Optionally specify a folder in Cloudinary
-                    });
-
-                    // Store the secure URL and public ID for the uploaded image
+                const uploadResults = [];
+                for (const file of images) {
+                    const uploadResult = await uploadImages(file);
                     uploadResults.push({
-                        secure_url: cloudinaryResponse.secure_url,
-                        public_id: cloudinaryResponse.public_id
+                        secure_url: uploadResult.secure_url,
+                        public_id: uploadResult.public_id
                     });
                 }
 
-                // 3. Insert image details into the product_images table
-                for (const image of uploadResults) {
-                    const imageSql = `INSERT INTO product_images (product_id, image_path, public_id)
-                                      VALUES (?, ?, ?)`;  // Only insert new image
-                    await queryAsync(imageSql, [productId, image.secure_url, image.public_id]);
-                }
+                // 3. Save image info in DB
+                const imageSql = `
+                    INSERT INTO product_images (product_id, image_path, public_id)
+                    VALUES ?`;
+                const imageValues = uploadResults.map(img => [productId, img.secure_url, img.public_id]);
+                await queryAsync(imageSql, [imageValues]);
             }
 
-            // Return success response
             res.status(200).json({
-                message: 'Product successfully updated with new images',
+                message: 'Product successfully updated',
             });
 
         } catch (err) {
