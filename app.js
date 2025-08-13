@@ -18,7 +18,7 @@ app.set('view engine', 'jade');
 // Allow cross origin
 app.use(cors({
   origin: 'https://hollartkiddies.onrender.com', // Allow your frontend URL
-  origin: 'http://localhost:5173', // Allow your frontend URL
+  // origin: 'http://localhost:5173', // Allow your frontend URL
   methods: ['GET', 'POST', 'PUT', 'DELETE'], // Specify allowed methods if needed
   credentials: true // If you need to send cookies or auth headers
 }));
